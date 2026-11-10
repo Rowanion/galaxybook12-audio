@@ -46,10 +46,10 @@ for side in left right; do
     got=$(r8 $amp $reg)
     if [ "$got" = "$(printf '0x%02x' $exp)" ]; then ok=$((ok+1)); mark="  "
     else bad=$((bad+1)); mark="!!"; fi
-    [ "$got" = 0xff ] && ff=$((ff+1))
+    [ "$got" = 0xff ] && [ "$(printf '0x%02x' $exp)" != 0xff ] && ff=$((ff+1))
     out+="$(printf '  %s reg %s  expected %s  read %s\n' "$mark" "$reg" "$(printf '0x%02x' $exp)" "$got")"$'\n'
   done < <(table $side)
-  echo "--- $side amp ($amp): $ok match, $bad differ ($ff read 0xff = no answer)"
+  echo "--- $side amp ($amp): $ok match, $bad differ ($ff unexpected 0xff = possibly no answer)"
   printf '%s' "$out"
 done
 echo "Note: a few registers may be status/self-clearing and legitimately differ;"

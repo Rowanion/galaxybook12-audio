@@ -25,16 +25,22 @@ applies on any hardware reporting that exact codec/subsystem combination.
 
 ## Known limitation
 
-On the development unit, the right speaker was effectively non-functional
-(very faint/no output) under this driver. The same right-channel issue was
-also present under the older DarrenBenson userspace fix, so this is very
-likely a hardware/amp fault on the specific unit rather than something this
-patch can fix. If your right speaker works fine, this note doesn't apply to
-you — please report back either way.
+On the development unit, the right speaker is very faint. This is a
+hardware fault on that unit, not a driver problem:
 
-Do not attempt to fix this by swapping the `0x31`/`0x34` amp-selector values
-in the patch — this was tried and caused a channel-crossing regression without
-restoring right-channel output.
+- `tools/amp-dump` reads every register the driver writes back from both
+  amplifiers: the right amp (`0x34`) holds exactly its intended values, just
+  like the left (`0x31`); the only differing register (`0x20`, a self-changing
+  bit) differs identically on both.
+- Swapping the `0x31`/`0x34` amp-selector values in the patch gave a
+  channel-crossing regression without restoring right-channel output.
+- The same register tables give working stereo on fxjosemi's Book 12.
+
+(The older DarrenBenson 10.6 userspace fix wrote the 10.6 amplifier setup to
+I²C `0x34` — the Book 12's right amp — on every resume, so the right channel
+behaving badly under it says nothing; with it removed and the right amp
+verified, the fault remains.) If your right speaker works fine, this note
+doesn't apply to you.
 
 ## Headphone jack
 
@@ -105,6 +111,8 @@ save and restore every codec setting they touch):
 - `tools/mic-locate` — quiet-vs-speaking recording on every input pin, normal
   and in ALC298 combo-jack headset mode, to find a headset microphone.
 - `tools/mic-probe`, `tools/headset-mode-test` — earlier, narrower versions.
+- `tools/amp-dump` — reads both speaker amplifiers back and compares with the
+  driver's register tables.
 
 ## Credit
 
