@@ -1,0 +1,45 @@
+#!/bin/bash
+# Watch the ALC298 jack-sense pins while you plug/unplug headphones.
+#   sudo ./jack-probe          (runs 60 s, Ctrl+C to stop early)
+# Prints presence for pin 0x17 (shared speaker/headphone output),
+# pin 0x18 (headset mic), and the driver's 'Mic Jack' control.
+# Read-only: it only asks the codec to measure (SET_PIN_SENSE trigger)
+# and reads the result; nothing is reconfigured.
+set -u
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+DEV=/dev/snd/hwC0D0
+DUR="${1:-60}"
+U="${SUDO_USER:-root}"; H="$(getent passwd "$U" | cut -d: -f6)"
+LOG="$H/jack-probe-$(date +%Y%m%d-%H%M%S).log"
+
+sense() {   # -> "IN" / "--" / raw on error
+  hda-verb "$DEV" "$1" SET_PIN_SENSE 0 >/dev/null 2>&1
+  local v; v=$(hda-verb "$DEV" "$1" GET_PIN_SENSE 0 2>/dev/null | sed -n 's/.*value = \(0x[0-9a-f]*\).*/\1/p')
+  [ -z "$v" ] && { echo "err"; return; }
+  if (( v & 0x80000000 )); then echo "IN($v)"; else echo "--($v)"; fi
+}
+
+{
+echo "=== jack probe $(date)  kernel $(uname -r)"
+for n in 0x17 0x18 0x19 0x1a 0x21; do
+  echo "pin $n config: $(hda-verb $DEV $n GET_CONFIG_DEFAULT 0 2>/dev/null | sed -n 's/.*value = //p')  pinctl: $(hda-verb $DEV $n GET_PIN_WIDGET_CONTROL 0 2>/dev/null | sed -n 's/.*value = //p')"
+done
+echo
+echo "Plug in / pull out the headphones a few times now (wait ~3 s each way)."
+echo "time      pin0x17          pin0x18          'Mic Jack'"
+} | tee "$LOG"
+
+prev=""
+end=$(( $(date +%s) + DUR ))
+while [ "$(date +%s)" -lt "$end" ]; do
+  a=$(sense 0x17); b=$(sense 0x18)
+  c=$(amixer -c0 cget name='Mic Jack' 2>/dev/null | sed -n 's/.*: values=//p')
+  line="$(printf '%-16s %-16s %s' "$a" "$b" "$c")"
+  if [ "$line" != "$prev" ]; then
+    printf '%s  %s\n' "$(date +%T)" "$line" | tee -a "$LOG"
+    prev="$line"
+  fi
+  sleep 0.5
+done
+chown "$U": "$LOG"
+echo "Saved: $LOG"

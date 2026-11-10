@@ -1,0 +1,108 @@
+#!/bin/bash
+# Find which codec pin the headset microphone is wired to, and whether any
+# pin senses it.   sudo ./mic-probe
+#
+# 1. Reads every jack sensor with the headset unplugged, then plugged.
+# 2. With the headset plugged, records 4 s from the internal mic (0x12) and
+#    from each candidate pin (0x18, 0x19, 0x1a) while you rub/tap the
+#    HEADSET microphone. The loud one is the headset mic.
+# Changes the recording selector and pin settings only temporarily and
+# restores them at the end (a reboot restores them too).
+set -u
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+DEV=/dev/snd/hwC0D0
+U="${SUDO_USER:-root}"; H="$(getent passwd "$U" | cut -d: -f6)"
+LOG="$H/mic-probe-$(date +%Y%m%d-%H%M%S).log"
+TMP="$(mktemp -d)"
+SENSE_PINS="0x17 0x18 0x19 0x1a 0x1e 0x1f 0x21"
+
+v()  { hda-verb "$DEV" "$@" 2>/dev/null | sed -n 's/.*value = \(0x[0-9a-f]*\).*/\1/p'; }
+sense_all() {
+  local n out=""
+  for n in $SENSE_PINS; do
+    hda-verb "$DEV" "$n" SET_PIN_SENSE 0 >/dev/null 2>&1
+    local s; s=$(v "$n" GET_PIN_SENSE 0)
+    if [ -n "$s" ] && (( s & 0x80000000 )); then out+="$n:IN  "; else out+="$n:--  "; fi
+  done
+  echo "$out"
+}
+say() { echo "$*" | tee -a "$LOG"; }
+
+# ---- save state
+SEL=$(v 0x22 GET_CONNECT_SEL 0)
+declare -A PC; for n in 0x18 0x19 0x1a; do PC[$n]=$(v $n GET_PIN_WIDGET_CONTROL 0); done
+declare -A AMP
+for n in 0x18 0x19 0x1a; do
+  AMP[$n.L]=$(v $n GET_AMP_GAIN_MUTE 0x2000); AMP[$n.R]=$(v $n GET_AMP_GAIN_MUTE 0x0000)
+done
+CAPSAVE="$TMP/asound.state"; alsactl store -f "$CAPSAVE" 0 2>/dev/null
+restore() {
+  [ -n "${REC_PID:-}" ] && kill "$REC_PID" 2>/dev/null
+  hda-verb $DEV 0x22 SET_CONNECT_SEL "${SEL:-0x5}" >/dev/null 2>&1
+  for n in 0x18 0x19 0x1a; do
+    hda-verb $DEV $n SET_PIN_WIDGET_CONTROL "${PC[$n]:-0x0}" >/dev/null 2>&1
+    # amp value read back: bit7 mute, low bits gain -> write as input amp L/R
+    for ch in L R; do
+      a="${AMP[$n.$ch]:-0x0}"; [ $ch = L ] && side=0x6000 || side=0x5000
+      hda-verb $DEV $n SET_AMP_GAIN_MUTE $(( side | 0x0 | (a & 0xff) )) >/dev/null 2>&1
+    done
+  done
+  alsactl restore -f "$CAPSAVE" 0 2>/dev/null
+  rm -rf "$TMP"
+  echo "(codec settings restored)"
+}
+trap restore EXIT
+
+say "=== mic probe $(date)  kernel $(uname -r)"
+say "saved: selector 0x22=$SEL  pinctl 0x18=${PC[0x18]} 0x19=${PC[0x19]} 0x1a=${PC[0x1a]}"
+say ""
+read -r -p ">>> UNPLUG the headset, then press Enter " _
+say "unplugged: $(sense_all)"
+read -r -p ">>> PLUG IN the headset (3-ring plug), wait 2 s, then press Enter " _
+say "plugged:   $(sense_all)"
+# mic bias on all candidates, then sense again (some combo jacks need bias)
+for n in 0x19 0x1a; do hda-verb $DEV $n SET_PIN_WIDGET_CONTROL 0x24 >/dev/null 2>&1; done
+sleep 0.5
+say "plugged+bias on 0x19/0x1a: $(sense_all)"
+say ""
+
+# capture path: ADC 0x09 <- selector 0x22; make sure capture is on and loud
+amixer -c0 -q sset Capture cap 80% 2>/dev/null
+amixer -c0 -q sset 'Mic Boost' 2 2>/dev/null
+
+rms() {   # rms <wav>  -> dBFS of the loudest 100 ms block
+  python3 -I - "$1" <<'EOF'
+import sys, wave, array, math
+w = wave.open(sys.argv[1]); n = w.getnframes(); ch = w.getnchannels(); r = w.getframerate()
+a = array.array('h', w.readframes(n))
+blk = int(r * 0.1) * ch; best = 0.0; tot = 0.0
+for i in range(0, len(a) - blk, blk):
+    s = sum(x * x for x in a[i:i + blk]) / blk
+    best = max(best, s); tot += s
+avg = tot / max(1, (len(a) // blk))
+db = lambda p: 20 * math.log10(math.sqrt(p) / 32768) if p > 0 else -120
+print(f"peak {db(best):6.1f} dBFS   avg {db(avg):6.1f} dBFS")
+EOF
+}
+
+say "Recording test: during EACH 4-second recording, rub or tap the HEADSET"
+say "microphone (or speak into it). Keep away from the tablet's own mic."
+idx() { case $1 in 0x18) echo 0;; 0x19) echo 1;; 0x1a) echo 2;; 0x12) echo 5;; esac; }
+for pin in 0x12 0x18 0x19 0x1a; do
+  read -r -p ">>> Press Enter, then rub the headset mic for 4 s  [input $pin] " _
+  arecord -q -D hw:0,0 -f S16_LE -r 48000 -c 2 -d 5 "$TMP/$pin.wav" &
+  REC_PID=$!
+  sleep 0.4      # codec is powered up by the open stream; now route
+  hda-verb $DEV 0x22 SET_CONNECT_SEL "$(idx $pin)" >/dev/null 2>&1
+  if [ "$pin" != 0x12 ]; then
+    hda-verb $DEV $pin SET_PIN_WIDGET_CONTROL 0x24 >/dev/null 2>&1      # IN + VREF80 bias
+    hda-verb $DEV $pin SET_AMP_GAIN_MUTE 0x7002 >/dev/null 2>&1          # in-amp unmute, +20 dB
+  fi
+  wait "$REC_PID"; REC_PID=""
+  label="$pin"; [ $pin = 0x12 ] && label="0x12 (internal mic)"
+  say "$(printf '%-20s %s' "$label" "$(rms "$TMP/$pin.wav")")"
+done
+say ""
+say "Higher (less negative) peak = that input heard the headset mic."
+chown "$U": "$LOG"
+echo "Saved: $LOG"

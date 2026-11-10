@@ -1,6 +1,6 @@
 --- a/sound/hda/codecs/realtek/alc269.c
 +++ b/sound/hda/codecs/realtek/alc269.c
-@@ -1757,6 +1757,296 @@
+@@ -1757,6 +1757,324 @@
  	alc_fixup_hp_gpio_led(codec, action, 0x00, 0x01);
  }
  
@@ -8,8 +8,8 @@
 + * The 2017 Galaxy Book 12 uses two vendor-controlled speaker amplifiers and
 + * routes both the speakers and the headset through pin 0x17.  The BIOS leaves
 + * the amplifiers uninitialised and the standard pin configuration describes
-+ * 0x17 only as a fixed speaker, while headset presence is reported by the
-+ * microphone pin 0x18.
++ * 0x17 only as a fixed speaker, although 0x17's own pin sense reports
++ * headphone/headset presence (see alc298_book12_hp_present()).
 + */
 +struct alc298_book12_reg {
 +	unsigned short reg;
@@ -191,6 +191,32 @@
 +				 HDA_AMP_VOLMASK, right & HDA_AMP_VOLMASK);
 +}
 +
++/*
++ * Headphone/headset presence is reported by the shared output pin 0x17's
++ * own pin sense (measured on SM-W720: 0x17 toggles on every plug/unplug,
++ * the mic pin 0x18 only does for plugs with a microphone contact). The firmware
++ * marks 0x17 as a fixed speaker, so it is registered as a phantom jack and
++ * the jack-table helpers would always report it present: read it raw.
++ */
++static bool alc298_book12_raw_sense(struct hda_codec *codec, hda_nid_t nid)
++{
++	if (snd_hda_query_pin_caps(codec, nid) & AC_PINCAP_TRIG_REQ)
++		snd_hda_codec_read(codec, nid, 0, AC_VERB_SET_PIN_SENSE, 0);
++	return snd_hda_codec_read(codec, nid, 0, AC_VERB_GET_PIN_SENSE, 0) &
++		AC_PINSENSE_PRESENCE;
++}
++
++/*
++ * Raw reads: 0x17 is a phantom jack (always "present" in the jack table).
++ * 0x18 reports 4-pole headsets with a microphone contact; the generic
++ * auto-mic switch already follows 0x18 for the headset microphone.
++ */
++static bool alc298_book12_hp_present(struct hda_codec *codec)
++{
++	return alc298_book12_raw_sense(codec, 0x17) ||
++	       alc298_book12_raw_sense(codec, 0x18);
++}
++
 +static void alc298_book12_switch_output(struct hda_codec *codec)
 +{
 +	struct alc_spec *spec = codec->spec;
@@ -198,8 +224,7 @@
 +	unsigned int left, right;
 +	unsigned int pinctl;
 +
-+	headphones = snd_hda_jack_detect_state(codec, 0x18) ==
-+		HDA_JACK_PRESENT;
++	headphones = alc298_book12_hp_present(codec);
 +	left = snd_hda_codec_amp_read(codec, 0x17, 0, HDA_OUTPUT, 0);
 +	right = snd_hda_codec_amp_read(codec, 0x17, 1, HDA_OUTPUT, 0);
 +
@@ -270,6 +295,9 @@
 +		cb = snd_hda_jack_detect_enable_callback(codec, 0x18, cb_func);
 +		if (IS_ERR(cb))
 +			codec_warn(codec, "Galaxy Book 12: jack callback failed\n");
++		cb = snd_hda_jack_detect_enable_callback(codec, 0x17, cb_func);
++		if (IS_ERR(cb))
++			codec_warn(codec, "Galaxy Book 12: 0x17 jack callback failed\n");
 +		break;
 +	case HDA_FIXUP_ACT_INIT:
 +		left = snd_hda_codec_amp_read(codec, 0x17, 0, HDA_OUTPUT, 0);
@@ -297,15 +325,13 @@
  static inline void alc298_samsung_write_coef_pack(struct hda_codec *codec,
  						  const unsigned short coefs[2])
  {
-@@ -4026,6 +4316,7 @@
- 	ALC236_FIXUP_HP_MUTE_LED,
- 	ALC236_FIXUP_HP_MUTE_LED_MICMUTE_VREF,
+@@ -4028,4 +4346,5 @@
  	ALC236_FIXUP_LENOVO_INV_DMIC,
 +	ALC298_FIXUP_SAMSUNG_GALAXY_BOOK12,
  	ALC298_FIXUP_SAMSUNG_AMP,
  	ALC298_FIXUP_SAMSUNG_AMP_V2_2_AMPS,
  	ALC298_FIXUP_SAMSUNG_AMP_V2_4_AMPS,
-@@ -5745,6 +6036,10 @@
+@@ -5745,6 +6064,10 @@
  		.type = HDA_FIXUP_FUNC,
  		.v.func = alc295_fixup_hp_pavilion_mute_led_1b,
  	},
@@ -316,7 +342,7 @@
  	[ALC298_FIXUP_SAMSUNG_AMP] = {
  		.type = HDA_FIXUP_FUNC,
  		.v.func = alc298_fixup_samsung_amp,
-@@ -7514,6 +7809,8 @@
+@@ -7514,6 +7837,8 @@
  	SND_PCI_QUIRK(0x10f7, 0x8338, "Panasonic CF-SZ6", ALC269_FIXUP_ASPIRE_HEADSET_MIC),
  	SND_PCI_QUIRK(0x1414, 0x9c20, "Microsoft Surface Pro 2/3", ALC288_FIXUP_SURFACE_SWAP_DACS),
  	SND_PCI_QUIRK(0x144d, 0xc109, "Samsung Ativ book 9 (NP900X3G)", ALC269_FIXUP_INV_DMIC),
