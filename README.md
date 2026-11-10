@@ -23,6 +23,11 @@ Confirmed working on:
 The quirk matches purely on PCI subsystem ID (no DMI check at all), so it
 applies on any hardware reporting that exact codec/subsystem combination.
 
+> **Fedora only.** Tested on Fedora 44 only. The kernel patches and DKMS build should work on
+> other distributions, but the install scripts are written for Fedora (`dnf`/`rpm`,
+> `kernel-devel`, kernels found via `/lib/modules/<version>/vmlinuz`).
+> On other distributions they are untested and will likely fail.
+
 ## Known limitation
 
 On the development unit, the right speaker is very faint. This is a
