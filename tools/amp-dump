@@ -1,0 +1,59 @@
+#!/bin/bash
+# Read back the two speaker amplifiers (I2C 0x31 = left, 0x34 = right) through
+# the ALC298's I2C-over-COEF bridge and compare every register with the value
+# the driver writes (tables taken from the patch in ../dkms/patches/).
+#   sudo ./amp-dump          (do not plug/unplug the jack while it runs)
+# Read-only for the amplifiers. The codec bridge registers it uses are saved
+# and restored.
+set -u
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+DEV=/dev/snd/hwC0D0
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PATCH="$HERE/../dkms/patches/0001-sound-hda-realtek-galaxy-book12.patch"
+U="${SUDO_USER:-root}"; H="$(getent passwd "$U" | cut -d: -f6)"
+LOG="$H/amp-dump-$(date +%Y%m%d-%H%M%S).log"
+
+hv() { hda-verb "$DEV" "$@" >/dev/null 2>&1; }
+rv() { hda-verb "$DEV" "$@" 2>/dev/null | sed -n 's/.*value = \(0x[0-9a-f]*\).*/\1/p'; }
+cget() { hv 0x20 SET_COEF_INDEX "$1"; rv 0x20 GET_PROC_COEF 0; }
+cset() { hv 0x20 SET_COEF_INDEX "$1"; hv 0x20 SET_PROC_COEF "$2"; }
+wait_idle() { local i v; for i in $(seq 1 100); do v=$(cget 0x26); (( (v & 0x4000) == 0 )) && return 0; done; return 1; }
+r8() {  # r8 <amp> <reg>  (Windows-driver read primitive, opcode 0xa018, result in coef 0x28)
+  wait_idle
+  hv 0x06 0x73e 0x80
+  cset 0x26 $(( $(cget 0x26) | 0x4000 ))
+  cset 0x22 "$1"; cset 0x23 "$2"
+  cset 0x26 0xa018; sleep 0.003; wait_idle
+  local v; v=$(cget 0x28)
+  hv 0x06 0x73e 0x00
+  cset 0x26 $(( $(cget 0x26) & ~0x4000 ))
+  printf '0x%02x' $(( v & 0xff ))
+}
+
+declare -A SAVE; for c in 0x22 0x23 0x24 0x25; do SAVE[$c]=$(cget $c); done
+trap 'for c in 0x22 0x23 0x24 0x25; do cset $c "${SAVE[$c]}"; done' EXIT
+
+table() {  # table <left|right> -> "reg val" lines from the patch
+  sed -n "/alc298_book12_amp_$1\[\] = {/,/^+};/p" "$PATCH" | grep -o '{ 0x[0-9a-f]*, 0x[0-9a-f]* }' | tr -d '{},'
+}
+
+{
+echo "=== amp dump $(date)  kernel $(uname -r)"
+for side in left right; do
+  [ $side = left ] && amp=0x31 || amp=0x34
+  ok=0; bad=0; ff=0; out=""
+  while read -r reg exp; do
+    got=$(r8 $amp $reg)
+    if [ "$got" = "$(printf '0x%02x' $exp)" ]; then ok=$((ok+1)); mark="  "
+    else bad=$((bad+1)); mark="!!"; fi
+    [ "$got" = 0xff ] && ff=$((ff+1))
+    out+="$(printf '  %s reg %s  expected %s  read %s\n' "$mark" "$reg" "$(printf '0x%02x' $exp)" "$got")"$'\n'
+  done < <(table $side)
+  echo "--- $side amp ($amp): $ok match, $bad differ ($ff read 0xff = no answer)"
+  printf '%s' "$out"
+done
+echo "Note: a few registers may be status/self-clearing and legitimately differ;"
+echo "what matters is whether the RIGHT amp differs where the LEFT one matches."
+} | tee "$LOG"
+chown "$U": "$LOG"
+echo "Saved: $LOG"
