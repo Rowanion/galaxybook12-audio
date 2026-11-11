@@ -135,6 +135,11 @@ The underlying register-level amp research is originally from Aurélien Croc
 (AP²C)'s Windows/QEMU trace work, per both the upstream project and the
 earlier DarrenBenson userspace fix.
 
+## AI assistance
+
+Parts of this repository were developed with AI assistance (Claude by
+Anthropic). Every change was reviewed and tested on real SM-W720 hardware.
+
 ## License
 
 GPL-2.0-only, matching the Linux kernel.
